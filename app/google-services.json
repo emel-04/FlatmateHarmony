@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "929759469713",
+    "project_id": "flatmateharmony",
+    "storage_bucket": "flatmateharmony.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:929759469713:android:3ee315fdb3089e2d87df30",
+        "android_client_info": {
+          "package_name": "com.example.flatmateharmony"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCz_mMM6WQ8fwj6UOQve8lSfZlG4APSzH0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
