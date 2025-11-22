@@ -1,14 +1,20 @@
 package com.example.flatmateharmony.screens
 
 import android.widget.Toast
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
+import com.example.flatmateharmony.R
 import com.example.flatmateharmony.navigation.Screen
 import com.google.firebase.auth.FirebaseAuth
 
@@ -20,21 +26,48 @@ fun ForgotPasswordScreen(navController: NavController) {
     var email by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("QUÊN MẬT KHẨU", style = MaterialTheme.typography.titleLarge)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Background image
+        Image(
+            painter = painterResource(id = R.drawable.background),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+        
+        // Overlay mờ
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.5f))
+        )
+        
+        // Content
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+        Text("QUÊN MẬT KHẨU", style = MaterialTheme.typography.titleLarge, color = Color.White)
         Spacer(Modifier.height(16.dp))
 
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
-            label = { Text("Nhập email đã đăng ký") },
-            modifier = Modifier.fillMaxWidth()
+            label = { Text("Nhập email đã đăng ký", color = Color.White) },
+            modifier = Modifier.fillMaxWidth(),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedLabelColor = Color.White,
+                unfocusedLabelColor = Color.White.copy(alpha = 0.7f),
+                focusedBorderColor = Color.White,
+                unfocusedBorderColor = Color.White.copy(alpha = 0.7f),
+                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                unfocusedContainerColor = Color.White.copy(alpha = 0.1f)
+            )
         )
 
         Spacer(Modifier.height(16.dp))
@@ -65,7 +98,8 @@ fun ForgotPasswordScreen(navController: NavController) {
         Spacer(Modifier.height(8.dp))
 
         TextButton(onClick = { navController.navigate(Screen.Login.route) }) {
-            Text("Quay lại đăng nhập")
+            Text("Quay lại đăng nhập", color = Color.White)
+        }
         }
     }
 }

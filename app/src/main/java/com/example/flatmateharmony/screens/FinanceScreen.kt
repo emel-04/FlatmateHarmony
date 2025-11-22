@@ -399,16 +399,17 @@ fun FinanceScreen(navController: NavController, homeCode: String) {
                 showEditDialog = false
                 selectedTransactionForEdit = null
             },
-            onConfirm = { desc: String, amtStr: String, imageUri: Uri? ->
+            onConfirm = { desc: String, amtStr: String, imageUri: Uri?, keepOriginalImage: Boolean ->
                 val amt = amtStr.toLongOrNull() ?: 0L
                 if (amt > 0) {
                     coroutineScope.launch {
-                        var imageBase64 = selectedTransactionForEdit!!.imageUrl
+                        var imageBase64 = ""
                         var convertSuccess = true
                         
+                        // Nếu có ảnh mới được chọn
                         if (imageUri != null) {
                             try {
-                                imageBase64 = uriToBase64(context, imageUri) ?: selectedTransactionForEdit!!.imageUrl
+                                imageBase64 = uriToBase64(context, imageUri) ?: ""
                                 if (imageBase64.isEmpty()) {
                                     convertSuccess = false
                                 }
@@ -417,6 +418,11 @@ fun FinanceScreen(navController: NavController, homeCode: String) {
                                 snackbarHostState.showSnackbar("⚠️ Không thể xử lý ảnh: ${e.message}")
                             }
                         }
+                        // Nếu giữ ảnh cũ
+                        else if (keepOriginalImage) {
+                            imageBase64 = selectedTransactionForEdit!!.imageUrl
+                        }
+                        // Ngược lại, xóa ảnh (imageBase64 = "")
                         
                         vm.updateTransaction(
                             selectedTransactionForEdit!!.id,
@@ -1581,16 +1587,20 @@ fun EditTransactionDialog(
     transaction: com.example.flatmateharmony.data.Transaction,
     currentUserName: String,
     onDismiss: () -> Unit,
-    onConfirm: (String, String, Uri?) -> Unit
+    onConfirm: (String, String, Uri?, Boolean) -> Unit
 ) {
     var description by remember { mutableStateOf(transaction.description) }
     var amount by remember { mutableStateOf(transaction.amount.toString()) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var showOriginalImage by remember { mutableStateOf(transaction.imageUrl.isNotEmpty()) }
     
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        selectedImageUri = uri
+        if (uri != null) {
+            selectedImageUri = uri
+            showOriginalImage = false // Ẩn ảnh cũ khi chọn ảnh mới
+        }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -1665,7 +1675,45 @@ fun EditTransactionDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     
-                    if (transaction.imageUrl.isNotEmpty()) {
+                    // Hiển thị ảnh mới nếu có
+                    if (selectedImageUri != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            AsyncImage(
+                                model = selectedImageUri,
+                                contentDescription = "Ảnh mới",
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                            
+                            IconButton(
+                                onClick = { 
+                                    selectedImageUri = null 
+                                    showOriginalImage = transaction.imageUrl.isNotEmpty() // Hiển thị lại ảnh cũ nếu có
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.errorContainer,
+                                        CircleShape
+                                    )
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Xóa ảnh mới",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                    // Hiển thị ảnh cũ nếu không có ảnh mới và showOriginalImage = true
+                    else if (showOriginalImage && transaction.imageUrl.isNotEmpty()) {
                         val context = LocalContext.current
                         val bitmap = remember(transaction.imageUrl) { base64ToBitmap(transaction.imageUrl) }
                         
@@ -1685,7 +1733,9 @@ fun EditTransactionDialog(
                                 )
                                 
                                 IconButton(
-                                    onClick = { selectedImageUri = null },
+                                    onClick = { 
+                                        showOriginalImage = false // Ẩn ảnh cũ
+                                    },
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .padding(8.dp)
@@ -1696,7 +1746,7 @@ fun EditTransactionDialog(
                                 ) {
                                     Icon(
                                         Icons.Default.Close,
-                                        contentDescription = "Xóa ảnh",
+                                        contentDescription = "Xóa ảnh hiện tại",
                                         tint = MaterialTheme.colorScheme.error
                                     )
                                 }
@@ -1704,39 +1754,8 @@ fun EditTransactionDialog(
                         }
                     }
                     
-                    if (selectedImageUri != null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(200.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                        ) {
-                            AsyncImage(
-                                model = selectedImageUri,
-                                contentDescription = "Ảnh mới",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                            
-                            IconButton(
-                                onClick = { selectedImageUri = null },
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(8.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.errorContainer,
-                                        CircleShape
-                                    )
-                            ) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Xóa ảnh",
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                    } else if (transaction.imageUrl.isEmpty()) {
+                    // Hiển thị nút chọn ảnh khi không có ảnh nào được hiển thị
+                    if (selectedImageUri == null && (!showOriginalImage || transaction.imageUrl.isEmpty())) {
                         OutlinedButton(
                             onClick = { imagePickerLauncher.launch("image/*") },
                             modifier = Modifier
@@ -1763,7 +1782,9 @@ fun EditTransactionDialog(
                                 )
                             }
                         }
-                    } else {
+                    }
+                    // Hiển thị nút thay đổi ảnh khi có ảnh (cũ hoặc mới) được hiển thị
+                    else if (selectedImageUri != null || showOriginalImage) {
                         OutlinedButton(
                             onClick = { imagePickerLauncher.launch("image/*") },
                             modifier = Modifier
@@ -1794,7 +1815,9 @@ fun EditTransactionDialog(
                     }
 
                     Button(
-                        onClick = { onConfirm(description, amount, selectedImageUri) },
+                        onClick = { 
+                            onConfirm(description, amount, selectedImageUri, showOriginalImage) 
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .height(50.dp),

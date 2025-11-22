@@ -39,6 +39,16 @@ import java.util.Date
 import com.example.flatmateharmony.utils.formatCurrency
 import com.example.flatmateharmony.utils.parseCurrency
 import com.example.flatmateharmony.utils.rememberCurrencyVisualTransformation
+import com.example.flatmateharmony.utils.uriToBase64
+import com.example.flatmateharmony.utils.base64ToBitmap
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import android.util.Log
+import coil.compose.AsyncImage
 
 data class HomeInfo(
     val homeCode: String = "",
@@ -52,7 +62,8 @@ data class MemberInfo(
     val userId: String = "",
     val name: String = "",
     val role: String = "",
-    val joinedAt: Long = 0L
+    val joinedAt: Long = 0L,
+    val avatarUrl: String = ""
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,6 +88,11 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
     var showEditHomeDialog by remember { mutableStateOf(false) }
     var editAddress by remember { mutableStateOf("") }
     var editRent by remember { mutableStateOf("") }
+    var memberToTransferOwnership by remember { mutableStateOf<MemberInfo?>(null) }
+    var showTransferOwnershipDialog by remember { mutableStateOf(false) }
+    var currentUserAvatarUrl by remember { mutableStateOf("") }
+    var selectedAvatarUri by remember { mutableStateOf<Uri?>(null) }
+    var showAvatarPickerDialog by remember { mutableStateOf(false) }
 
     // ✅ Load thông tin nhà và members
     LaunchedEffect(homeCode) {
@@ -109,17 +125,148 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
                         userId = memberDoc.getString("userId") ?: "",
                         name = memberDoc.getString("name") ?: "Ẩn danh",
                         role = memberDoc.getString("role") ?: "member",
-                        joinedAt = memberDoc.getLong("joinedAt") ?: 0L
+                        joinedAt = memberDoc.getLong("joinedAt") ?: 0L,
+                        avatarUrl = memberDoc.getString("avatarUrl") ?: ""
                     )
                 }.sortedByDescending { it.joinedAt }
 
                 members = membersList
                 currentUserInfo = membersList.find { it.userId == currentUserId }
+                currentUserAvatarUrl = currentUserInfo?.avatarUrl ?: ""
             }
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
             isLoading = false
+        }
+    }
+
+    // ✅ Hàm chuyển quyền chủ nhà cho member khác
+    suspend fun transferOwnershipToNewOwner(): String? {
+        if (homeId.isEmpty()) return null
+        try {
+            // Lấy tất cả members còn lại (không phải owner hiện tại)
+            val allMembersSnapshot = db.collection("homes")
+                .document(homeId)
+                .collection("members")
+                .get()
+                .await()
+
+            if (allMembersSnapshot.documents.isEmpty()) {
+                // Không còn member nào, không thể chuyển quyền
+                return null
+            }
+
+            // Tìm member cũ nhất (joinedAt nhỏ nhất) để làm chủ nhà mới
+            val allMembers = allMembersSnapshot.documents.mapNotNull { doc ->
+                MemberInfo(
+                    userId = doc.getString("userId") ?: "",
+                    name = doc.getString("name") ?: "Ẩn danh",
+                    role = doc.getString("role") ?: "member",
+                    joinedAt = doc.getLong("joinedAt") ?: 0L,
+                    avatarUrl = doc.getString("avatarUrl") ?: ""
+                )
+            }
+
+            val newOwner = allMembers.minByOrNull { it.joinedAt }
+            if (newOwner == null) return null
+
+            // Cập nhật role của member mới thành owner
+            val newOwnerDoc = allMembersSnapshot.documents.find { 
+                it.getString("userId") == newOwner.userId 
+            }
+            
+            if (newOwnerDoc != null) {
+                newOwnerDoc.reference.update("role", "owner").await()
+            }
+
+            // Cập nhật ownerId trong document homes
+            db.collection("homes")
+                .document(homeId)
+                .update("ownerId", newOwner.userId)
+                .await()
+
+            return newOwner.userId
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        }
+    }
+
+    // ✅ Hàm reload dữ liệu
+    suspend fun reloadData() {
+        if (homeId.isEmpty()) return
+        try {
+            val homeDoc = db.collection("homes").document(homeId).get().await()
+            homeInfo = HomeInfo(
+                homeCode = homeDoc.getString("homeCode") ?: "",
+                address = homeDoc.getString("address") ?: "",
+                rent = homeDoc.getDouble("rent") ?: 0.0,
+                ownerId = homeDoc.getString("ownerId") ?: "",
+                createdAt = homeDoc.getLong("createdAt") ?: 0L
+            )
+
+            val membersSnapshot = db.collection("homes")
+                .document(homeId)
+                .collection("members")
+                .get()
+                .await()
+
+            val membersList = membersSnapshot.documents.mapNotNull { memberDoc ->
+                MemberInfo(
+                    userId = memberDoc.getString("userId") ?: "",
+                    name = memberDoc.getString("name") ?: "Ẩn danh",
+                    role = memberDoc.getString("role") ?: "member",
+                    joinedAt = memberDoc.getLong("joinedAt") ?: 0L,
+                    avatarUrl = memberDoc.getString("avatarUrl") ?: ""
+                )
+            }.sortedByDescending { it.joinedAt }
+
+            members = membersList
+            currentUserInfo = membersList.find { it.userId == currentUserId }
+            currentUserAvatarUrl = currentUserInfo?.avatarUrl ?: ""
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    // ✅ Hàm chuyển quyền chủ nhà cho member cụ thể (thủ công)
+    suspend fun transferOwnershipToMember(newOwnerUserId: String): Boolean {
+        if (homeId.isEmpty() || currentUserInfo?.role != "owner") return false
+        try {
+            // Tìm member document của chủ nhà cũ và chủ nhà mới
+            val oldOwnerDoc = db.collection("homes")
+                .document(homeId)
+                .collection("members")
+                .whereEqualTo("userId", currentUserId)
+                .get()
+                .await()
+            
+            val newOwnerDoc = db.collection("homes")
+                .document(homeId)
+                .collection("members")
+                .whereEqualTo("userId", newOwnerUserId)
+                .get()
+                .await()
+
+            if (newOwnerDoc.documents.isEmpty()) return false
+
+            // Cập nhật role: chủ nhà cũ -> member, chủ nhà mới -> owner
+            oldOwnerDoc.documents.forEach { it.reference.update("role", "member").await() }
+            newOwnerDoc.documents.forEach { it.reference.update("role", "owner").await() }
+
+            // Cập nhật ownerId trong document homes
+            db.collection("homes")
+                .document(homeId)
+                .update("ownerId", newOwnerUserId)
+                .await()
+
+            // Reload dữ liệu
+            reloadData()
+            return true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         }
     }
 
@@ -129,13 +276,19 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
         try {
             val homeDoc = db.collection("homes").document(homeId).get().await()
             val membersList = homeDoc.get("members") as? MutableList<String> ?: mutableListOf()
+            
+            // Kiểm tra xem user đang rời có phải là chủ nhà không
+            val isOwner = currentUserInfo?.role == "owner"
+            
+            // Nếu user đang rời là chủ nhà, chuyển quyền TRƯỚC khi xóa
+            if (isOwner && membersList.size > 1) {
+                transferOwnershipToNewOwner()
+            }
+            
+            // Xóa user khỏi danh sách members
             membersList.remove(currentUserId)
 
-            db.collection("homes")
-                .document(homeId)
-                .update("members", membersList)
-                .await()
-
+            // Xóa member document
             val memberDocs = db.collection("homes")
                 .document(homeId)
                 .collection("members")
@@ -144,6 +297,12 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
                 .await()
 
             memberDocs.documents.forEach { it.reference.delete().await() }
+
+            // Cập nhật danh sách members trong document homes
+            db.collection("homes")
+                .document(homeId)
+                .update("members", membersList)
+                .await()
 
             navController.navigate(Screen.Hello.route) {
                 popUpTo(0) { inclusive = true }
@@ -159,13 +318,19 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
         try {
             val homeDoc = db.collection("homes").document(homeId).get().await()
             val membersList = homeDoc.get("members") as? MutableList<String> ?: mutableListOf()
+            
+            // Kiểm tra xem member bị xóa có phải là chủ nhà không
+            val isRemovedMemberOwner = member.role == "owner"
+            
+            // Nếu member bị xóa là chủ nhà, chuyển quyền TRƯỚC khi xóa
+            if (isRemovedMemberOwner && membersList.size > 1) {
+                transferOwnershipToNewOwner()
+            }
+            
+            // Xóa member khỏi danh sách
             membersList.remove(member.userId)
 
-            db.collection("homes")
-                .document(homeId)
-                .update("members", membersList)
-                .await()
-
+            // Xóa member document
             val memberDocs = db.collection("homes")
                 .document(homeId)
                 .collection("members")
@@ -175,23 +340,14 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
 
             memberDocs.documents.forEach { it.reference.delete().await() }
 
-            // Reload members
-            val membersSnapshot = db.collection("homes")
+            // Cập nhật danh sách members trong document homes
+            db.collection("homes")
                 .document(homeId)
-                .collection("members")
-                .get()
+                .update("members", membersList)
                 .await()
 
-            val updatedMembers = membersSnapshot.documents.mapNotNull { memberDoc ->
-                MemberInfo(
-                    userId = memberDoc.getString("userId") ?: "",
-                    name = memberDoc.getString("name") ?: "Ẩn danh",
-                    role = memberDoc.getString("role") ?: "member",
-                    joinedAt = memberDoc.getLong("joinedAt") ?: 0L
-                )
-            }.sortedByDescending { it.joinedAt }
-
-            members = updatedMembers
+            // Reload dữ liệu
+            reloadData()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -232,6 +388,41 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+    }
+
+    // ✅ Hàm lưu avatar
+    suspend fun saveAvatar(avatarBase64: String): Boolean {
+        if (homeId.isEmpty() || currentUserId == null) return false
+        try {
+            val memberDocs = db.collection("homes")
+                .document(homeId)
+                .collection("members")
+                .whereEqualTo("userId", currentUserId)
+                .get()
+                .await()
+
+            if (memberDocs.documents.isNotEmpty()) {
+                memberDocs.documents.first().reference.update("avatarUrl", avatarBase64).await()
+                
+                // Reload dữ liệu
+                reloadData()
+                return true
+            }
+            return false
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
+    }
+
+    // ✅ Image picker launcher
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            selectedAvatarUri = uri
+            showAvatarPickerDialog = true
         }
     }
 
@@ -311,15 +502,52 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
                                 modifier = Modifier
                                     .size(64.dp)
                                     .clip(CircleShape)
+                                    .clickable { imagePickerLauncher.launch("image/*") }
                                     .background(Color(0xFF4CAF50)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = currentUserInfo?.name?.firstOrNull()?.uppercase() ?: "P",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
+                                if (currentUserAvatarUrl.isNotEmpty()) {
+                                    val bitmap = remember(currentUserAvatarUrl) { base64ToBitmap(currentUserAvatarUrl) }
+                                    if (bitmap != null) {
+                                        Image(
+                                            bitmap = bitmap.asImageBitmap(),
+                                            contentDescription = "Avatar",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Text(
+                                            text = currentUserInfo?.name?.firstOrNull()?.uppercase() ?: "P",
+                                            style = MaterialTheme.typography.headlineMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = currentUserInfo?.name?.firstOrNull()?.uppercase() ?: "P",
+                                        style = MaterialTheme.typography.headlineMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+                                
+                                // Icon camera nhỏ ở góc dưới bên phải
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF6366F1)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CameraAlt,
+                                        contentDescription = "Đổi avatar",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
@@ -535,12 +763,31 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = member.name.firstOrNull()?.uppercase() ?: "A",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
+                                if (member.avatarUrl.isNotEmpty()) {
+                                    val bitmap = remember(member.avatarUrl) { base64ToBitmap(member.avatarUrl) }
+                                    if (bitmap != null) {
+                                        Image(
+                                            bitmap = bitmap.asImageBitmap(),
+                                            contentDescription = "Avatar",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Text(
+                                            text = member.name.firstOrNull()?.uppercase() ?: "A",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text = member.name.firstOrNull()?.uppercase() ?: "A",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
                             }
 
                             Column(modifier = Modifier.weight(1f)) {
@@ -550,23 +797,47 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
                                     fontWeight = FontWeight.Bold,
                                     color = Color.Black
                                 )
+                                if (member.role == "owner") {
+                                    Text(
+                                        text = "Chủ nhà",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF2196F3),
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                }
                             }
 
-                            // Hiển thị nút xóa nếu là chủ nhà và không phải chính mình
+                            // Hiển thị nút chuyển chủ nhà nếu là chủ nhà và không phải chính mình
                             if (currentUserInfo?.role == "owner" && member.userId != currentUserId && member.role != "owner") {
-                                IconButton(
-                                    onClick = {
-                                        memberToRemove = member
-                                        showRemoveMemberDialog = true
-                                    },
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Xóa thành viên",
-                                        tint = Color(0xFFFF5252),
-                                        modifier = Modifier.size(24.dp)
-                                    )
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    IconButton(
+                                        onClick = {
+                                            memberToTransferOwnership = member
+                                            showTransferOwnershipDialog = true
+                                        },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.AdminPanelSettings,
+                                            contentDescription = "Chuyển chủ nhà",
+                                            tint = Color(0xFF2196F3),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            memberToRemove = member
+                                            showRemoveMemberDialog = true
+                                        },
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Xóa thành viên",
+                                            tint = Color(0xFFFF5252),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -682,6 +953,151 @@ fun CreateTransactionScreen(navController: NavController, homeCode: String) {
             },
             dismissButton = { OutlinedButton(onClick = { showLogoutDialog = false }) { Text("Hủy") } }
         )
+    }
+
+    // Dialog chuyển chủ nhà
+    if (showTransferOwnershipDialog && memberToTransferOwnership != null) {
+        AlertDialog(
+            onDismissRequest = { 
+                showTransferOwnershipDialog = false
+                memberToTransferOwnership = null
+            },
+            icon = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = Color(0xFF2196F3)) },
+            title = { Text("Chuyển chủ nhà?", fontWeight = FontWeight.Bold) },
+            text = { 
+                Text("Bạn có chắc chắn muốn chuyển quyền chủ nhà cho ${memberToTransferOwnership?.name}? Bạn sẽ trở thành thành viên thường.") 
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        memberToTransferOwnership?.let { member ->
+                            coroutineScope.launch {
+                                val success = transferOwnershipToMember(member.userId)
+                                if (success) {
+                                    showTransferOwnershipDialog = false
+                                    memberToTransferOwnership = null
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
+                ) { Text("Chuyển quyền") }
+            },
+            dismissButton = { 
+                OutlinedButton(onClick = { 
+                    showTransferOwnershipDialog = false
+                    memberToTransferOwnership = null
+                }) { 
+                    Text("Hủy") 
+                } 
+            }
+        )
+    }
+
+    // Dialog xác nhận cập nhật avatar
+    if (showAvatarPickerDialog && selectedAvatarUri != null) {
+        Dialog(onDismissRequest = { 
+            showAvatarPickerDialog = false
+            selectedAvatarUri = null
+        }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccountCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(48.dp)
+                    )
+
+                    Text(
+                        "Cập nhật avatar",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    // Preview ảnh
+                    Box(
+                        modifier = Modifier
+                            .size(200.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        AsyncImage(
+                            model = selectedAvatarUri,
+                            contentDescription = "Avatar preview",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+
+                    Text(
+                        "Bạn có muốn sử dụng ảnh này làm avatar không?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OutlinedButton(
+                            onClick = { 
+                                showAvatarPickerDialog = false
+                                selectedAvatarUri = null
+                            },
+                            modifier = Modifier
+                                .height(50.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Hủy", style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        Button(
+                            onClick = {
+                                selectedAvatarUri?.let { uri ->
+                                    coroutineScope.launch {
+                                        try {
+                                            Log.d("CreateTransactionScreen", "Bắt đầu chuyển đổi avatar sang Base64: $uri")
+                                            val avatarBase64 = uriToBase64(context, uri) ?: ""
+                                            
+                                            if (avatarBase64.isNotEmpty()) {
+                                                Log.d("CreateTransactionScreen", "Chuyển đổi avatar thành công! Kích thước: ${avatarBase64.length} ký tự")
+                                                val success = saveAvatar(avatarBase64)
+                                                if (success) {
+                                                    showAvatarPickerDialog = false
+                                                    selectedAvatarUri = null
+                                                } else {
+                                                    Log.e("CreateTransactionScreen", "Lỗi khi lưu avatar")
+                                                }
+                                            } else {
+                                                Log.e("CreateTransactionScreen", "Chuyển đổi avatar thất bại")
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e("CreateTransactionScreen", "Lỗi khi xử lý avatar", e)
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .height(50.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Xác nhận", style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Dialog chỉnh sửa thông tin nhà
